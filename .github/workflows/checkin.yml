@@ -1,0 +1,85 @@
+name: 每日签到
+
+on:
+  schedule:
+    # UTC 0:00 = 北京时间 8:00
+    # 使用 cron 每天固定时间触发 + 脚本内随机延迟
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    # 支持手动触发测试
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装系统依赖（Playwright 浏览器运行所需）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgbm1 \
+            libnss3 \
+            libnspr4 \
+            libatk-bridge2.0-0 \
+            libdrm2 \
+            libxkbcommon0 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxrandr2 \
+            libgbm-dev \
+            libasound2t64 \
+            --no-install-recommends
+
+      - name: 安装 Python 依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 安装 Playwright 浏览器
+        run: |
+          python -m playwright install chromium
+
+      - name: 随机延迟（0~7200 秒）
+        id: delay
+        run: |
+          DELAY=$(( RANDOM % 7200 ))
+          echo "随机延迟 ${DELAY} 秒..."
+          sleep $DELAY
+          echo "delay=$DELAY" >> $GITHUB_OUTPUT
+
+      - name: 执行签到
+        env:
+          VPNPN_USERNAME: ${{ secrets.VPNPN_USERNAME }}
+          VPNPN_PASSWORD: ${{ secrets.VPNPN_PASSWORD }}
+        run: |
+          python checkin.py --headless --browser-channel chromium --result-file result.json
+
+      - name: 上传签到结果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkin-result
+          path: result.json
+
+      - name: 签到结果摘要
+        if: always()
+        run: |
+          if [ -f result.json ]; then
+            STATUS=$(python -c "import json; r=json.load(open('result.json')); print(r.get('status','unknown')); print(r.get('message','')); print(r.get('timestamp',''))")
+            echo "## 签到结果" >> $GITHUB_STEP_SUMMARY
+            echo "| 项目 | 值 |" >> $GITHUB_STEP_SUMMARY
+            echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+            echo "$STATUS" | while IFS= read -r line; do
+              [ -n "$line" ] && echo "| | $line |" >> $GITHUB_STEP_SUMMARY
+            done
+          else
+            echo "签到结果文件未生成" >> $GITHUB_STEP_SUMMARY
+          fi

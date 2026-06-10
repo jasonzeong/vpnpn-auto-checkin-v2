@@ -1,0 +1,23 @@
+# 环境变量（含敏感信息）
+.env
+
+# Python 虚拟环境
+.venv/
+venv/
+
+# Playwright 截图、快照等
+.playwright-cli/
+*.png
+
+# 运行时生成的结果文件
+result.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
