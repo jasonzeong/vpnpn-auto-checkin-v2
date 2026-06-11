@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 冲上云霄 (vpnpn.com) 每日自动签到脚本
 
@@ -49,6 +49,9 @@ RESULT_ALREADY = "already_signed"
 RESULT_CAPTCHA_FAILED = "captcha_failed"
 RESULT_ERROR = "error"
 
+# 验证码最大重试次数
+MAX_CAPTCHA_RETRIES = 3
+
 
 def load_credentials():
     """加载登录凭据（优先环境变量，回退 .env 文件）"""
@@ -74,6 +77,15 @@ def safe_click(page: Page, locator, timeout: int = 8000):
     except Exception as e:
         logger.warning(f"点击元素失败 (timeout={timeout}ms): {e}")
         return False
+
+
+def save_debug_screenshot(page: Page, filename: str = "debug-screenshot.png"):
+    """保存调试截图"""
+    try:
+        page.screenshot(path=filename, full_page=True)
+        logger.info(f"已保存调试截图: {filename}")
+    except Exception as e:
+        logger.warning(f"保存截图失败: {e}")
 
 
 def solve_captcha(page: Page) -> str | None:
@@ -119,6 +131,16 @@ def solve_captcha(page: Page) -> str | None:
                 pass
 
 
+def save_debug_screenshot(page: Page, step_name: str):
+    """保存调试截图"""
+    try:
+        screenshot_path = f"debug-screenshot-{step_name}.png"
+        page.screenshot(path=screenshot_path, full_page=True)
+        logger.info(f"调试截图已保存: {screenshot_path}")
+    except Exception as e:
+        logger.warning(f"保存调试截图失败: {e}")
+
+
 def perform_checkin(page: Page) -> str:
     """
     执行签到操作。
@@ -128,15 +150,22 @@ def perform_checkin(page: Page) -> str:
 
     # --- Step 1: 导航到 Dashboard / 登录 ---
     logger.info(f"导航到 Dashboard: {DASHBOARD_URL}")
-    page.goto(DASHBOARD_URL, wait_until="networkidle")
-    page.wait_for_timeout(2000)
+    page.goto(DASHBOARD_URL, wait_until="domcontentloaded", timeout=30000)
+    page.wait_for_load_state("load", timeout=15000)
+    
+    # 调试信息
+    logger.info(f"当前页面 URL: {page.url}")
+    logger.info(f"页面标题: {page.title()}")
 
     # 检查当前是否在登录页（未登录状态）
     current_url = page.url
     if "/login" in current_url:
         logger.info("检测到未登录，执行登录...")
+        save_debug_screenshot(page, "before-login")
         if not login(page):
+            save_debug_screenshot(page, "login-failed")
             return RESULT_ERROR
+        save_debug_screenshot(page, "after-login")
     else:
         logger.info("已登录状态，继续...")
 
@@ -168,24 +197,27 @@ def perform_checkin(page: Page) -> str:
     checkin_entry = page.locator("text=每日签到").first
     if not safe_click(page, checkin_entry, timeout=5000):
         logger.error("找不到签到入口元素")
+        save_debug_screenshot(page, "error-no-checkin-entry.png")
         return RESULT_ERROR
     logger.info("已点击每日签到，等待签到弹窗...")
     page.wait_for_timeout(1500)
 
-    # --- Step 6: 处理验证码 ---
+    # --- Step 6: 处理验证码（最多重试 MAX_CAPTCHA_RETRIES 次） ---
     logger.info("识别验证码...")
-    captcha_text = solve_captcha(page)
-    if not captcha_text:
-        # 重试一次（点击验证码图片刷新，再试一次）
-        logger.warning("验证码第一次识别失败，尝试刷新验证码后重试...")
+    captcha_text = None
+    for attempt in range(MAX_CAPTCHA_RETRIES):
+        captcha_text = solve_captcha(page)
+        if captcha_text:
+            break
+        logger.warning(f"验证码第 {attempt + 1} 次识别失败，刷新验证码后重试...")
         captcha_img = page.locator('img[alt="captcha"]')
         if captcha_img.is_visible():
             captcha_img.click()
-            page.wait_for_timeout(1000)
-        captcha_text = solve_captcha(page)
+            page.wait_for_timeout(1500)
 
     if not captcha_text:
-        logger.error("验证码识别失败（已重试）")
+        logger.error(f"验证码识别失败（已重试 {MAX_CAPTCHA_RETRIES} 次）")
+        save_debug_screenshot(page, "error-captcha-failed.png")
         return RESULT_CAPTCHA_FAILED
 
     # --- Step 7: 输入验证码 ---
@@ -196,6 +228,7 @@ def perform_checkin(page: Page) -> str:
         captcha_input.fill(captcha_text)
     else:
         logger.error("找不到验证码输入框")
+        save_debug_screenshot(page, "error-no-captcha-input.png")
         return RESULT_CAPTCHA_FAILED
 
     page.wait_for_timeout(300)
@@ -205,27 +238,29 @@ def perform_checkin(page: Page) -> str:
     submit_btn = page.get_by_role("button", name="签到")
     if not safe_click(page, submit_btn, timeout=5000):
         logger.error("找不到签到提交按钮")
+        save_debug_screenshot(page, "error-no-submit-btn.png")
         return RESULT_ERROR
 
     # --- Step 9: 等待并判断签到结果 ---
-    page.wait_for_timeout(2000)
+    page.wait_for_timeout(3000)
 
     page_content = page.content()
 
     if "签到成功" in page_content:
-        logger.info("✅ 签到成功！")
+        logger.info("签到成功！")
         return RESULT_OK
     elif "已签到" in page_content or "今日已签到" in page_content:
-        logger.info("📌 今日已签到，无需重复签到")
+        logger.info("今日已签到，无需重复签到")
         return RESULT_ALREADY
     elif "验证码错误" in page_content or "验证码不正确" in page_content:
-        logger.warning("❌ 验证码错误")
+        logger.warning("验证码错误")
+        save_debug_screenshot(page, "error-captcha-wrong.png")
         return RESULT_CAPTCHA_FAILED
     else:
         # 检查是否有奖励信息
         page_text = page.evaluate("document.body.innerText")
         logger.info(f"签到后页面文本: {page_text[:500]}")
-        logger.info("✅ 签到操作已完成")
+        logger.info("签到操作已完成")
         return RESULT_OK
 
 
@@ -234,19 +269,12 @@ def login(page: Page) -> bool:
     username, password = load_credentials()
     logger.info(f"登录用户: {username}")
 
-    page.goto(LOGIN_URL, wait_until="networkidle")
-    page.wait_for_timeout(2000)
-    
+    page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
+    page.wait_for_load_state("load", timeout=15000)
+
     # 调试信息
     logger.info(f"当前页面 URL: {page.url}")
     logger.info(f"页面标题: {page.title()}")
-    
-    # 等待页面加载完成
-    try:
-        page.wait_for_load_state("domcontentloaded", timeout=10000)
-        logger.info("页面 DOM 加载完成")
-    except Exception as e:
-        logger.warning(f"页面加载状态检查: {e}")
 
     # 填写用户名 - 使用多种方式
     try:
@@ -270,31 +298,33 @@ def login(page: Page) -> bool:
         page.fill('input[placeholder*="Password"], input[name*="pass"], input[type="password"]', password)
         logger.info("使用备用方案填写密码")
 
-    # 点击登录 - 使用多种定位方式
+    # 点击登录 - 使用 get_by_role 优先，文本定位备用
     try:
-        # 方法1: 使用文本内容
-        login_btn = page.locator("text=登录")
+        login_btn = page.get_by_role("button", name="登录")
         login_btn.click(timeout=10000)
     except Exception as e:
-        logger.warning(f"文本定位失败: {e}")
+        logger.warning(f"get_by_role 定位登录按钮失败: {e}")
         try:
-            # 方法2: 使用 CSS 选择器
             login_btn = page.locator("button:has-text('登录')")
             login_btn.click(timeout=10000)
         except Exception as e2:
-            logger.error(f"CSS 定位也失败: {e2}")
-            # 方法3: 使用 JavaScript 点击
+            logger.warning(f"CSS 定位也失败: {e2}")
             page.evaluate("document.querySelector('button[type=\"submit\"], button:not([disabled])').click()")
-    
-    page.wait_for_timeout(5000)
+
+    # 等待跳转到 dashboard
+    try:
+        page.wait_for_url("**/dashboard**", timeout=15000)
+    except Exception:
+        page.wait_for_timeout(3000)
 
     # 确认登录成功（检查是否跳转到 dashboard）
     current_url = page.url
     if "/dashboard" in current_url:
-        logger.info("✅ 登录成功")
+        logger.info("登录成功")
         return True
     else:
-        logger.error(f"❌ 登录失败，当前页面: {current_url}")
+        logger.error(f"登录失败，当前页面: {current_url}")
+        save_debug_screenshot(page, "error-login-failed.png")
         return False
 
 
@@ -340,6 +370,9 @@ def main():
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-extensions",
+                    "--disable-setuid-sandbox",
                 ],
             }
             if args.browser_channel and args.browser_channel != "chromium":
@@ -368,12 +401,13 @@ def main():
                 elif checkin_status == RESULT_CAPTCHA_FAILED:
                     result["message"] = "验证码识别失败"
                 else:
-                    result["message"] = "签到执行异常"
+                    result["message"] = "签到执行异常 - 请检查调试截图"
 
             except Exception as e:
                 logger.exception(f"签到过程异常: {e}")
                 result["status"] = RESULT_ERROR
-                result["message"] = str(e)
+                result["message"] = f"签到过程异常: {str(e)}"
+                save_debug_screenshot(page, "debug-screenshot.png")
 
             finally:
                 browser.close()
