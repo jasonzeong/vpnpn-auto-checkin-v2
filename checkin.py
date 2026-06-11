@@ -236,18 +236,56 @@ def login(page: Page) -> bool:
 
     page.goto(LOGIN_URL, wait_until="networkidle")
     page.wait_for_timeout(2000)
+    
+    # 调试信息
+    logger.info(f"当前页面 URL: {page.url}")
+    logger.info(f"页面标题: {page.title()}")
+    
+    # 等待页面加载完成
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=10000)
+        logger.info("页面 DOM 加载完成")
+    except Exception as e:
+        logger.warning(f"页面加载状态检查: {e}")
 
-    # 填写用户名
-    username_input = page.get_by_placeholder("Username")
-    username_input.fill(username)
+    # 填写用户名 - 使用多种方式
+    try:
+        username_input = page.get_by_placeholder("Username")
+        username_input.fill(username)
+        logger.info("用户名填写成功")
+    except Exception as e:
+        logger.warning(f"get_by_placeholder 填写用户名失败: {e}")
+        # 备用方案
+        page.fill('input[placeholder*="Username"], input[name*="user"], input[type="text"]', username)
+        logger.info("使用备用方案填写用户名")
 
     # 填写密码
-    password_input = page.get_by_placeholder("Password")
-    password_input.fill(password)
+    try:
+        password_input = page.get_by_placeholder("Password")
+        password_input.fill(password)
+        logger.info("密码填写成功")
+    except Exception as e:
+        logger.warning(f"get_by_placeholder 填写密码失败: {e}")
+        # 备用方案
+        page.fill('input[placeholder*="Password"], input[name*="pass"], input[type="password"]', password)
+        logger.info("使用备用方案填写密码")
 
-    # 点击登录
-    login_btn = page.get_by_role("button", name="登录")
-    login_btn.click()
+    # 点击登录 - 使用多种定位方式
+    try:
+        # 方法1: 使用文本内容
+        login_btn = page.locator("text=登录")
+        login_btn.click(timeout=10000)
+    except Exception as e:
+        logger.warning(f"文本定位失败: {e}")
+        try:
+            # 方法2: 使用 CSS 选择器
+            login_btn = page.locator("button:has-text('登录')")
+            login_btn.click(timeout=10000)
+        except Exception as e2:
+            logger.error(f"CSS 定位也失败: {e2}")
+            # 方法3: 使用 JavaScript 点击
+            page.evaluate("document.querySelector('button[type=\"submit\"], button:not([disabled])').click()")
+    
     page.wait_for_timeout(5000)
 
     # 确认登录成功（检查是否跳转到 dashboard）
